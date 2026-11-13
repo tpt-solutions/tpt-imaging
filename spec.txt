@@ -1,0 +1,148 @@
+tpt-imaging Design Specification (v0.1)
+1. Overview
+tpt-imaging is a pure Rust, high-performance medical image analysis and neuroimaging engine. It serves as the unified, zero-FFI replacement for ITK (N-dimensional image registration, segmentation, and filtering) and FreeSurfer (cortical surface reconstruction, mesh topology, and brain parcellation).
+By combining volumetric voxel processing (ITK) and topological surface mesh generation (FreeSurfer) into a single workspace, tpt-imaging bridges the gap between raw radiological data (DICOM/NIfTI) and mathematically rigorous 3D geometric models, leveraging tpt-math and tpt-simd for extreme performance.
+2. Design Goals
+Strict Permissive Licensing: Every dependency must be MIT, BSD, Zlib, Unicode, ISC, or Dual MIT/Apache-2.0. GPL, LGPL, AGPL, MPL, and "Apache-2.0 ONLY" crates are strictly banned.
+Zero-FFI & Memory Safety: No bindgen wrappers for C++ libraries (like ITK, VTK, or GDCM). All DICOM parsing, NIfTI I/O, and mesh extraction are written in safe Rust.
+Topology-Preserving Geometry: FreeSurfer is notorious for topological defects (holes, handles) in brain surfaces. tpt-imaging will use Rust’s strict type system to mathematically guarantee that extracted surfaces are manifold and genus-0 (topologically equivalent to a sphere) before they are ever exported.
+no_std Core: The foundational spatial math (tpt-imaging-core) must support no_std + alloc for deployment on embedded medical edge devices (e.g., portable MRI controllers, robotic surgical arms).
+Fearless Concurrency: Medical volumes are massive (often gigabytes per scan). The architecture uses rayon and crossbeam to parallelize 3D convolutions, registration optimizations, and mesh decimation without data races.
+3. Workspace Architecture
+tpt-imaging/
+├── tpt-imaging-core/      # Shared spatial math, voxel grids, affine transforms (no_std)
+├── tpt-imaging-io/        # Zero-FFI parsers/writers for DICOM, NIfTI, NRRD, Analyze 7.5
+├── tpt-imaging-process/   # ITK replacement: N-D filtering, registration, segmentation
+├── tpt-imaging-mesh/      # FreeSurfer replacement: Isosurfaces, topology repair, spherical mapping
+├── tpt-imaging-cli/       # The `tptimg` unified command-line tool
+└── bindings/
+    └── tpt-imaging-py/    # PyO3 bindings (MIT) for the broader Python medical ecosystem
+4. Crate Breakdown
+4.1 tpt-imaging-core (The Foundation)
+Role: The no_std leaf crate. Contains N-dimensional voxel grid abstractions, physical-to-voxel space affine transformations, and spatial indexing.
+Dependencies: tpt-math (Internal), glam (MIT/Apache-2.0) for fast affine/matrix math.
+4.2 tpt-imaging-io (The Data Ingestion Layer)
+Role: Handles all medical image formats without relying on C-libraries like GDCM or ITK's I/O module.
+Key Features:
+DICOM: Pure Rust DICOM parsing (handling transfer syntaxes, JPEG2000, RLE) using the dicom crate ecosystem concepts.
+NIfTI & NRRD: Zero-copy memory-mapped readers for NIfTI-1/2 and NRRD formats.
+Streaming: Chunked reading for massive whole-body CT scans to prevent OOM (Out of Memory) errors.
+Dependencies: dicom (MIT/Apache-2.0), nifti (MIT/Apache-2.0), byteorder (MIT/Apache-2.0).
+4.3 tpt-imaging-process (The ITK Killer)
+Role: The computational workhorse for volumetric image analysis.
+Key Features:
+Filtering: N-D convolutions, anisotropic diffusion (edge-preserving smoothing), and morphological operations powered by tpt-simd.
+Registration: Rigid, affine, and non-linear (diffeomorphic/LDDMM) registration to align sequential scans or map patient data to standard atlases (e.g., MNI152). Uses tpt-math for PDE solving and optimization.
+Segmentation: Region growing, level sets, and atlas-based tissue classification (e.g., separating Gray Matter, White Matter, and CSF).
+Dependencies: ndarray (MIT/Apache-2.0), tpt-math (Internal), tpt-simd (Internal).
+4.4 tpt-imaging-mesh (The FreeSurfer Killer)
+Role: Extracts and processes 3D topological surfaces from volumetric segmentations.
+Key Features:
+Isosurface Extraction: Highly optimized, parallelized Marching Cubes.
+Topology Repair: Algorithms to detect and fix non-manifold edges, holes, and self-intersections, guaranteeing a genus-0 surface.
+Spherical Mapping: Conformal mapping of the complex cortical surface to a sphere (a critical step for brain parcellation).
+Surface Analysis: Cortical thickness calculation and curvature analysis.
+Dependencies: tpt-imaging-core, tpt-math (Internal).
+4.5 tpt-imaging-cli & tpt-imaging-py
+tpt-imaging-cli: Fast, ergonomic CLI using clap (MIT/Apache-2.0) exposing commands like tptimg register, tptimg segment, and tptimg mesh extract.
+tpt-imaging-py: PyO3 bindings (MIT). Allows integration into existing Python medical imaging workflows (like replacing heavy ITK/SimpleITK Python wrappers).
+5. Licensing & Dependency Hardening (Critical)
+5.1 The "MIT-First" Policy
+To maintain maximum adoption and minimize legal friction, tpt-imaging enforces the same zero-tolerance policy as tpt-bio.
+Allowed: MIT, Dual MIT/Apache-2.0, BSD (2/3-Clause), Zlib, Unicode, ISC.
+Strictly Banned: GPL (v2/v3), AGPL, LGPL, MPL, and Apache-2.0 ONLY.
+5.2 Automated Compliance via cargo-deny
+The repository includes a deny.toml configuration that fails the build if a banned license is introduced.
+deny.toml Configuration:
+[licenses]
+unlicensed = "deny"
+copyleft = "deny" # Blocks GPL, AGPL, LGPL, MPL
+confidence-threshold = 0.93
+
+allow = [
+    "MIT",
+    "Apache-2.0", 
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "ISC",
+]
+
+deny = [
+    "GPL-2.0", "GPL-3.0", "AGPL-3.0", "LGPL-2.1", "LGPL-3.0", "MPL-2.0",
+]
+
+# Ban specific crates known to cause licensing or FFI headaches in medical imaging
+[[bans.deny]]
+name = "gdcm"       # LGPL C++ dependency (often pulled in by DICOM wrappers)
+name = "itk"        # Apache-2.0 only / C++ FFI
+name = "vtkio"      # Can pull in BSD/C++ FFI depending on features
+
+5.3 Compliant Dependency Selection
+Legacy C/C++ Tool
+Banned/Problematic Rust Crate
+Approved tpt-imaging Crate
+License
+ITK / SimpleITK
+itk-rs (C++ FFI)
+ndarray, tpt-imaging-process
+MIT / Apache-2.0
+GDCM / DICOM
+gdcm (LGPL C++)
+dicom (Pure Rust)
+MIT / Apache-2.0
+VTK / Meshing
+vtkio (C++ FFI)
+tpt-imaging-mesh (Custom Rust)
+MIT / Apache-2.0
+Linear Algebra
+openblas-src (LGPL/C)
+glam, faer, tpt-math
+MIT / Apache-2.0
+Python Bindings
+cpython
+pyo3
+MIT
+6. Key Technical Decisions (ADRs)
+ADR-001: Pure Rust DICOM over FFI to GDCM
+Decision: We will use pure Rust DICOM parsing rather than wrapping GDCM or DCMTK.
+Rationale: GDCM is LGPL, which instantly contaminates the workspace. DCMTK requires C++ FFI. The Rust dicom ecosystem is mature enough to handle standard transfer syntaxes natively, ensuring zero-FFI and strict MIT compliance.
+ADR-002: Diffeomorphic Registration via tpt-math
+Decision: Non-linear image registration (crucial for aligning brains to atlases) will be implemented natively using PDE (Partial Differential Equation) solvers in tpt-math, rather than wrapping ANTs or Elastix.
+Rationale: ANTs and Elastix are massive C++ codebases. By implementing the core optimization (e.g., LDDMM or Demons) in Rust using tpt-math and tpt-simd, we achieve memory safety and fearless concurrency while avoiding C++ build-system nightmares.
+ADR-003: Topology-Preserving Mesh Extraction
+Decision: tpt-imaging-mesh will enforce manifoldness at the type-system level during isosurface extraction.
+Rationale: FreeSurfer spends millions of CPU hours running mris_fix_topology because standard Marching Cubes creates non-manifold meshes. By using a topology-preserving variant (like Custódio's algorithm) and validating half-edge data structures in Rust, we guarantee genus-0 surfaces on the first pass, saving days of compute time in neuroimaging pipelines.
+7. Data Flow Example: Cortical Surface Reconstruction
+To illustrate how the workspace operates, here is the data flow for a FreeSurfer-style brain reconstruction pipeline:
+Ingestion (tpt-imaging-io): Reads a 3D T1-weighted MRI scan from a DICOM series, reconstructing it into a NIfTI volume.
+Preprocessing (tpt-imaging-process + tpt-simd): Applies N4 bias field correction (using tpt-math for B-spline fitting) and anisotropic diffusion to reduce noise while preserving tissue boundaries.
+Skull Stripping (tpt-imaging-process): Uses atlas-based registration and morphological operations to remove the skull and non-brain tissue.
+Tissue Segmentation (tpt-imaging-process): Classifies voxels into Gray Matter (GM), White Matter (WM), and Cerebrospinal Fluid (CSF) using partial volume estimation.
+Surface Extraction (tpt-imaging-mesh): Extracts the White Matter surface using topology-preserving Marching Cubes, guaranteeing a closed, genus-0 mesh.
+Spherical Inflation (tpt-imaging-mesh + tpt-math): Maps the complex folded cortical surface onto a sphere using conformal geometry, preparing it for surface-based parcellation (e.g., Desikan-Killiany atlas).
+Export (tpt-imaging-py): The final meshes and statistical thickness maps are exposed to Python for clinical reporting.
+8. Phased Roadmap (Solo Maintainer Strategy)
+Phase 1: Core & I/O (Months 1-3)
+Scaffold the Cargo workspace.
+Implement tpt-imaging-core (N-D voxel grids, affine math).
+Implement tpt-imaging-io: NIfTI reading/writing, basic DICOM parsing.
+Milestone: tptimg convert can read a DICOM series and export a NIfTI file flawlessly.
+Phase 2: Processing & Registration (Months 4-6)
+Implement tpt-imaging-process: 3D convolutions, morphological ops.
+Integrate tpt-simd for vectorized volume processing.
+Implement rigid and affine registration.
+Milestone: tptimg register can align two brain scans using mutual information in seconds.
+Phase 3: Mesh & Surface Reconstruction (Months 7-9)
+Implement tpt-imaging-mesh: Marching Cubes, half-edge data structures.
+Implement topology repair and spherical mapping algorithms.
+Milestone: tptimg mesh extract can generate a genus-0 cortical surface from a segmented brain volume without topological defects.
+Phase 4: CLI, Python Bindings & Release (Months 10-12)
+Build tpt-imaging-cli frontend.
+Implement tpt-imaging-py (PyO3).
+Milestone: Release v0.1.0 on crates.io and PyPI. Publish benchmarks comparing tpt-imaging to ITK and FreeSurfer.
+9. Licensing
+tpt-imaging is dual-licensed under MIT and Apache-2.0.
+Copyright: © 2026 TPT Solutions.
+Philosophy: By strictly enforcing permissive dependencies and avoiding C++ FFI, we ensure that medical device manufacturers, academic hospitals, and AI-health startups can adopt this software under the MIT license without legal friction, while you retain full control as the solo maintainer.

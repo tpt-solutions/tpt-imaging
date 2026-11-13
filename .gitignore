@@ -1,0 +1,17 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+*.nii
+*.nii.gz
+*.dcm
+*.mgz
+/test-data/
+*.whl
+/dist/
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
